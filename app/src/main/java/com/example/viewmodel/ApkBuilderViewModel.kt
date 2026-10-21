@@ -100,16 +100,41 @@ class ApkBuilderViewModel(
         runIntegrityVerification()
     }
 
+    fun loadUploadedCodeDexZip(context: Context) {
+        viewModelScope.launch {
+            try {
+                addLog("Loading attached project archive 'CodeDexLocalAI-Android-Projekt-v2.zip'...", LogLevel.COMMAND, "IMPORT")
+                val proj = ProjectZipManager.loadProjectFromAsset(context, "projects/CodeDexLocalAI.zip", "CodeDex Local AI")
+                if (proj != null) {
+                    _currentProject.value = proj
+                    _latestBuildResult.value = null
+                    addLog("✓ Successfully unpacked ZIP: ${proj.name} (${proj.packageName})", LogLevel.SUCCESS, "IMPORT")
+                    addLog("Detected ${proj.files.size} files, launcher: ${proj.launcherActivity}, version: ${proj.versionName}")
+                    runIntegrityVerification()
+                } else {
+                    addLog("Could not open bundled asset projects/CodeDexLocalAI.zip", LogLevel.ERROR, "IMPORT")
+                }
+            } catch (e: Exception) {
+                addLog("Error loading project: ${e.message}", LogLevel.ERROR, "IMPORT")
+            }
+        }
+    }
+
     fun importProjectFromZip(context: Context, uri: Uri) {
         viewModelScope.launch {
             try {
-                addLog("Importing project archive from: $uri...", LogLevel.COMMAND, "IMPORT")
+                val inferredName = getFileNameFromUri(context, uri)
+                    ?.removeSuffix(".zip")
+                    ?.removeSuffix(".ZIP")
+                    ?: "ImportedProject"
+
+                addLog("Importing project archive ($inferredName) from: $uri...", LogLevel.COMMAND, "IMPORT")
                 context.contentResolver.openInputStream(uri)?.use { stream ->
-                    val proj = ProjectZipManager.extractProjectFromZip(stream, "ImportedApp")
+                    val proj = ProjectZipManager.extractProjectFromZip(stream, inferredName)
                     _currentProject.value = proj
                     _latestBuildResult.value = null
-                    addLog("✓ Successfully unpacked ZIP: ${proj.name}", LogLevel.SUCCESS, "IMPORT")
-                    addLog("Found ${proj.files.size} text files, ${proj.binaryFiles.size} binary assets.")
+                    addLog("✓ Successfully unpacked ZIP: ${proj.name} (${proj.packageName})", LogLevel.SUCCESS, "IMPORT")
+                    addLog("Found ${proj.files.size} project files, launcher: ${proj.launcherActivity}, label: ${proj.appLabel}")
                     runIntegrityVerification()
                 } ?: run {
                     addLog("Failed to open input stream for selected ZIP.", LogLevel.ERROR, "IMPORT")
@@ -117,6 +142,24 @@ class ApkBuilderViewModel(
             } catch (e: Exception) {
                 addLog("Error importing ZIP: ${e.message}", LogLevel.ERROR, "IMPORT")
             }
+        }
+    }
+
+    private fun getFileNameFromUri(context: Context, uri: Uri): String? {
+        return try {
+            var name: String? = null
+            if (uri.scheme == "content") {
+                val cursor = context.contentResolver.query(uri, null, null, null, null)
+                cursor?.use {
+                    if (it.moveToFirst()) {
+                        val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (nameIndex >= 0) name = it.getString(nameIndex)
+                    }
+                }
+            }
+            name ?: uri.lastPathSegment
+        } catch (_: Exception) {
+            null
         }
     }
 

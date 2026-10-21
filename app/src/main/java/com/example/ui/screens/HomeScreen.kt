@@ -267,6 +267,74 @@ fun HomeScreen(
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Uploaded Project Archive 1-Tap Load
+                ElevatedCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, CyberPrimary.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                        .testTag("uploaded_project_card"),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(CyberSurfaceVariant)
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(CyberPrimaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Archive,
+                                    contentDescription = null,
+                                    tint = CyberPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "CodeDex Local AI",
+                                    color = OnSurfaceWhite,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                Text(
+                                    text = "Uploaded Project Archive (dev.codedex.localai)",
+                                    color = CyberPrimary,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = { viewModel.loadUploadedCodeDexZip(context) },
+                            colors = ButtonDefaults.buttonColors(containerColor = CyberPrimary),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("load_codedex_zip_btn")
+                        ) {
+                            Text(
+                                text = "Load ZIP",
+                                color = CyberBg,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
             }
         }
 

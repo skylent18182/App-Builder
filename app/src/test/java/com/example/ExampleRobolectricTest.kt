@@ -62,4 +62,38 @@ class ExampleRobolectricTest {
       assertEquals(template.packageName, packageInfo?.packageName)
     }
   }
+
+  @Test
+  fun `test user zip extraction and build`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val zipFile = java.io.File("public/assets/aistudio/CodeDexLocalAI-Android-Projekt-v2_b6f38e53.zip")
+    if (zipFile.exists()) {
+      val project = ProjectZipManager.extractProjectFromZip(java.io.FileInputStream(zipFile), "CodeDexLocalAI")
+      println("PARSED USER PROJECT:")
+      println("  Name: ${project.name}")
+      println("  PackageName: ${project.packageName}")
+      println("  AppLabel: ${project.appLabel}")
+      println("  Version: ${project.versionName} (${project.versionCode})")
+      println("  Launcher: ${project.launcherActivity}")
+      println("  Files: ${project.files.size}")
+      println("  Permissions: ${project.permissions}")
+      println("  Dependencies: ${project.dependencies}")
+
+      val pkgEngine = PackageManagerEngine(context)
+      val builderEngine = ApkBuilderEngine(context, pkgEngine)
+      val result = builderEngine.buildProject(
+        project = project,
+        onStepChanged = {},
+        onLog = { println("LOG [${project.name}]: ${it.message}") }
+      )
+      println("USER APK BUILD RESULT: success = ${result.success}, path = ${result.apkFile?.absolutePath}")
+      assertNotNull(result.apkFile)
+
+      val packageInfo = context.packageManager.getPackageArchiveInfo(result.apkFile!!.absolutePath, 0)
+      println("USER APK PACKAGE INFO: $packageInfo")
+      assertNotNull("User project APK must parse!", packageInfo)
+      assertEquals("dev.codedex.localai", packageInfo?.packageName)
+    }
+  }
 }
+

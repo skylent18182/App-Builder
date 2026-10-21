@@ -109,6 +109,7 @@ class ApkBuilderEngine(
 
             // Determine matching base template
             val templateAssetName = when {
+                project.id.contains("codedex") || project.name.contains("CodeDex", ignoreCase = true) || project.packageName.contains("codedex") || project.launcherActivity.contains("dev.codedex") -> "codedex_localai.apk"
                 project.id.contains("sensor") || project.name.contains("Sensor") || project.packageName.contains("sensorsuite") -> "sensor_suite.apk"
                 project.id.contains("neon") || project.name.contains("Neon") || project.packageName.contains("neoncounter") -> "neon_counter.apk"
                 project.id.contains("web") || project.name.contains("Web") || project.packageName.contains("webwrapper") -> "web_wrapper.apk"

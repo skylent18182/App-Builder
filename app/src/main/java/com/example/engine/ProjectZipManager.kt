@@ -16,42 +16,77 @@ object ProjectZipManager {
      * Extracts an Android project from an InputStream of a ZIP file.
      */
     fun extractProjectFromZip(inputStream: InputStream, defaultName: String = "ImportedProject"): AndroidProject {
-        val textFiles = mutableMapOf<String, String>()
-        val binaryFiles = mutableMapOf<String, ByteArray>()
+        val rawEntries = mutableMapOf<String, ByteArray>()
 
         ZipInputStream(inputStream).use { zis ->
             var entry: ZipEntry? = zis.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory) {
-                    val normalizedPath = normalizePath(entry.name)
                     val buffer = ByteArrayOutputStream()
                     val data = ByteArray(4096)
                     var count: Int
                     while (zis.read(data).also { count = it } != -1) {
                         buffer.write(data, 0, count)
                     }
-                    val bytes = buffer.toByteArray()
-
-                    if (isTextFile(normalizedPath)) {
-                        try {
-                            textFiles[normalizedPath] = String(bytes, Charsets.UTF_8)
-                        } catch (_: Exception) {
-                            binaryFiles[normalizedPath] = bytes
-                        }
-                    } else {
-                        binaryFiles[normalizedPath] = bytes
-                    }
+                    val cleanPath = entry.name.replace("\\", "/").trimStart('/')
+                    rawEntries[cleanPath] = buffer.toByteArray()
                 }
                 zis.closeEntry()
                 entry = zis.nextEntry
             }
         }
 
-        return parseProjectFromFiles(textFiles, binaryFiles, defaultName)
+        // Determine if all entries are wrapped inside a single root folder (e.g. CodeDexLocalAI/...)
+        val rootDirs = rawEntries.keys.mapNotNull { path ->
+            if (path.contains("/")) path.substringBefore("/") else null
+        }.toSet()
+        val commonRoot = if (rootDirs.size == 1) rootDirs.first() else null
+
+        val textFiles = mutableMapOf<String, String>()
+        val binaryFiles = mutableMapOf<String, ByteArray>()
+
+        for ((rawPath, bytes) in rawEntries) {
+            val normalizedPath = if (commonRoot != null && rawPath.startsWith("$commonRoot/")) {
+                rawPath.removePrefix("$commonRoot/")
+            } else {
+                normalizePath(rawPath)
+            }
+
+            if (isTextFile(normalizedPath)) {
+                try {
+                    textFiles[normalizedPath] = String(bytes, Charsets.UTF_8)
+                } catch (_: Exception) {
+                    binaryFiles[normalizedPath] = bytes
+                }
+            } else {
+                binaryFiles[normalizedPath] = bytes
+            }
+        }
+
+        val fallback = if (defaultName != "ImportedApp" && defaultName != "ImportedProject" && defaultName.isNotBlank()) {
+            defaultName
+        } else {
+            commonRoot ?: defaultName
+        }
+
+        return parseProjectFromFiles(textFiles, binaryFiles, fallback)
+    }
+
+    /**
+     * Loads a project archive from an application asset.
+     */
+    fun loadProjectFromAsset(context: Context, assetPath: String, defaultName: String): AndroidProject? {
+        return try {
+            context.assets.open(assetPath).use { stream ->
+                extractProjectFromZip(stream, defaultName)
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun normalizePath(rawPath: String): String {
-        var clean = rawPath.replace("\\", "/")
+        var clean = rawPath.replace("\\", "/").trimStart('/')
         // Strip leading parent directory if zipped as a folder (e.g. MyProject/app/...)
         val parts = clean.split("/")
         if (parts.size > 1 && (clean.contains("/app/") || clean.contains("/src/"))) {
@@ -91,11 +126,22 @@ object ProjectZipManager {
         val manifestEntry = textFiles.entries.find { it.key.endsWith("AndroidManifest.xml") }
         val manifestContent = manifestEntry?.value ?: ""
 
+        val rootProjectName = extractRootProjectName(textFiles)
+        val manifestLabel = extractManifestLabel(manifestContent, textFiles)
+
         val packageName = extractAttribute(manifestContent, "package")
             ?: extractGradleNamespace(textFiles)
             ?: "com.example.${fallbackName.lowercase().filter { it.isLetter() }}"
 
-        val appLabel = extractManifestLabel(manifestContent, textFiles) ?: fallbackName
+        // Determine best user-facing project name: manifestLabel > rootProjectName > fallbackName
+        val effectiveName = when {
+            !manifestLabel.isNullOrBlank() -> manifestLabel
+            !rootProjectName.isNullOrBlank() -> rootProjectName
+            fallbackName.isNotBlank() && fallbackName != "ImportedApp" && fallbackName != "ImportedProject" -> fallbackName
+            else -> "Android App"
+        }
+
+        val appLabel = manifestLabel ?: effectiveName
         val versionCode = extractVersionCode(manifestContent, textFiles)
         val versionName = extractVersionName(manifestContent, textFiles)
         val launcherActivity = extractLauncherActivity(manifestContent) ?: "MainActivity"
@@ -103,7 +149,7 @@ object ProjectZipManager {
         val dependencies = extractDependencies(textFiles)
 
         return AndroidProject(
-            name = fallbackName,
+            name = effectiveName,
             packageName = packageName,
             versionName = versionName,
             versionCode = versionCode,
@@ -115,6 +161,12 @@ object ProjectZipManager {
             dependencies = dependencies,
             isTemplate = false
         )
+    }
+
+    private fun extractRootProjectName(textFiles: Map<String, String>): String? {
+        val settingsFile = textFiles.entries.find { it.key.contains("settings.gradle") }?.value ?: return null
+        val regex = Regex("""rootProject\.name\s*=\s*["']([^"']+)["']""")
+        return regex.find(settingsFile)?.groupValues?.get(1)
     }
 
     private fun extractAttribute(xml: String, attrName: String): String? {
@@ -204,9 +256,127 @@ object ProjectZipManager {
      */
     fun getBuiltInTemplates(): List<AndroidProject> {
         return listOf(
+            createCodeDexLocalAiTemplate(),
             createNeonCounterTemplate(),
             createHardwareSensorsTemplate(),
             createWebWrapperTemplate()
+        )
+    }
+
+    private fun createCodeDexLocalAiTemplate(): AndroidProject {
+        val files = mapOf(
+            "app/src/main/AndroidManifest.xml" to """
+                <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+                    <uses-permission android:name="android.permission.INTERNET" />
+                    <application
+                        android:allowBackup="true"
+                        android:label="CodeDex Local AI"
+                        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                        android:usesCleartextTraffic="false">
+                        <activity
+                            android:name=".MainActivity"
+                            android:exported="true">
+                            <intent-filter>
+                                <action android:name="android.intent.action.MAIN" />
+                                <category android:name="android.intent.category.LAUNCHER" />
+                            </intent-filter>
+                        </activity>
+                    </application>
+                </manifest>
+            """.trimIndent(),
+            "app/build.gradle.kts" to """
+                plugins {
+                    id("com.android.application")
+                    id("org.jetbrains.kotlin.android")
+                    id("org.jetbrains.kotlin.plugin.compose")
+                }
+                android {
+                    namespace = "dev.codedex.localai"
+                    compileSdk = 35
+                    defaultConfig {
+                        applicationId = "dev.codedex.localai"
+                        minSdk = 26
+                        targetSdk = 35
+                        versionCode = 1
+                        versionName = "0.1.0"
+                    }
+                    buildFeatures {
+                        compose = true
+                    }
+                }
+                dependencies {
+                    implementation("androidx.core:core-ktx:1.15.0")
+                    implementation("androidx.activity:activity-compose:1.9.3")
+                    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+                    implementation("com.google.mediapipe:tasks-genai:0.10.24")
+                }
+            """.trimIndent(),
+            "settings.gradle.kts" to """
+                pluginManagement {
+                    repositories {
+                        google()
+                        mavenCentral()
+                        gradlePluginPortal()
+                    }
+                }
+                dependencyResolutionManagement {
+                    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+                    repositories {
+                        google()
+                        mavenCentral()
+                    }
+                }
+                rootProject.name = "CodeDexLocalAI"
+                include(":app")
+            """.trimIndent(),
+            "build.gradle.kts" to """
+                plugins {
+                    id("com.android.application") version "8.7.3" apply false
+                    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+                    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+                }
+            """.trimIndent(),
+            "gradle.properties" to """
+                org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+                android.useAndroidX=true
+                kotlin.code.style=official
+            """.trimIndent(),
+            "app/src/main/java/dev/codedex/localai/MainActivity.kt" to """
+                package dev.codedex.localai
+
+                import android.os.Bundle
+                import androidx.activity.ComponentActivity
+                import androidx.activity.compose.setContent
+                import androidx.compose.material3.Text
+
+                class MainActivity : ComponentActivity() {
+                    override fun onCreate(savedInstanceState: Bundle?) {
+                        super.onCreate(savedInstanceState)
+                        setContent {
+                            Text("CodeDex Local AI - Initialized")
+                        }
+                    }
+                }
+            """.trimIndent()
+        )
+
+        return AndroidProject(
+            id = "template_codedex_localai",
+            name = "CodeDex Local AI",
+            packageName = "dev.codedex.localai",
+            versionName = "0.1.0",
+            versionCode = 1,
+            appLabel = "CodeDex Local AI",
+            launcherActivity = "MainActivity",
+            files = files,
+            permissions = listOf("android.permission.INTERNET"),
+            dependencies = listOf(
+                "androidx.core:core-ktx:1.15.0",
+                "androidx.activity:activity-compose:1.9.3",
+                "androidx.lifecycle:lifecycle-runtime-ktx:2.8.7",
+                "com.google.mediapipe:tasks-genai:0.10.24"
+            ),
+            isTemplate = true
         )
     }
 
