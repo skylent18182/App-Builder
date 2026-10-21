@@ -1,0 +1,6 @@
+{
+  "name": "APK Builder",
+  "description": "Build, verify, and package installable Android APKs from project ZIP files with terminal inspection and dependency downloading.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
