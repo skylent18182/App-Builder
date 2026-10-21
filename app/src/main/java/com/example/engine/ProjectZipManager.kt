@@ -13,7 +13,19 @@ import java.util.zip.ZipOutputStream
 object ProjectZipManager {
 
     /**
+     * Checks if byte array starts with valid ZIP magic bytes.
+     */
+    fun isZipFile(bytes: ByteArray): Boolean {
+        if (bytes.size < 4) return false
+        return (bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) &&
+                ((bytes[2] == 0x03.toByte() && bytes[3] == 0x04.toByte()) ||
+                 (bytes[2] == 0x05.toByte() && bytes[3] == 0x06.toByte()) ||
+                 (bytes[2] == 0x07.toByte() && bytes[3] == 0x08.toByte()))
+    }
+
+    /**
      * Extracts an Android project from an InputStream of a ZIP file.
+     * Supports arbitrary ZIP structures: single-root, multi-root, flat, nested, Flutter/RN/KMP, etc.
      */
     fun extractProjectFromZip(inputStream: InputStream, defaultName: String = "ImportedProject"): AndroidProject {
         val rawEntries = mutableMapOf<String, ByteArray>()
@@ -52,7 +64,7 @@ object ProjectZipManager {
                 normalizePath(rawPath)
             }
 
-            if (isTextFile(normalizedPath)) {
+            if (LanguageCatalog.isTextFile(normalizedPath, bytes)) {
                 try {
                     textFiles[normalizedPath] = String(bytes, Charsets.UTF_8)
                 } catch (_: Exception) {
@@ -103,35 +115,24 @@ object ProjectZipManager {
         return clean
     }
 
-    private fun isTextFile(path: String): Boolean {
-        val lower = path.lowercase()
-        return lower.endsWith(".xml") ||
-                lower.endsWith(".gradle") ||
-                lower.endsWith(".gradle.kts") ||
-                lower.endsWith(".kt") ||
-                lower.endsWith(".java") ||
-                lower.endsWith(".properties") ||
-                lower.endsWith(".json") ||
-                lower.endsWith(".txt") ||
-                lower.endsWith(".md") ||
-                lower.endsWith(".pro")
-    }
-
     fun parseProjectFromFiles(
         textFiles: Map<String, String>,
         binaryFiles: Map<String, ByteArray>,
         fallbackName: String
     ): AndroidProject {
-        // Find AndroidManifest.xml
-        val manifestEntry = textFiles.entries.find { it.key.endsWith("AndroidManifest.xml") }
-        val manifestContent = manifestEntry?.value ?: ""
+        val mutableTextFiles = textFiles.toMutableMap()
 
-        val rootProjectName = extractRootProjectName(textFiles)
-        val manifestLabel = extractManifestLabel(manifestContent, textFiles)
+        // Find AndroidManifest.xml (case-insensitive search anywhere in directory tree)
+        val manifestEntry = mutableTextFiles.entries.find { it.key.lowercase().endsWith("androidmanifest.xml") }
+        var manifestContent = manifestEntry?.value ?: ""
 
-        val packageName = extractAttribute(manifestContent, "package")
-            ?: extractGradleNamespace(textFiles)
-            ?: "com.example.${fallbackName.lowercase().filter { it.isLetter() }}"
+        val rootProjectName = extractRootProjectName(mutableTextFiles)
+        val manifestLabel = extractManifestLabel(manifestContent, mutableTextFiles)
+
+        var packageName = extractAttribute(manifestContent, "package")
+            ?: extractGradleNamespace(mutableTextFiles)
+            ?: extractPackageFromSourceCode(mutableTextFiles)
+            ?: "com.example.${fallbackName.lowercase().filter { it.isLetter() }.ifEmpty { "app" }}"
 
         // Determine best user-facing project name: manifestLabel > rootProjectName > fallbackName
         val effectiveName = when {
@@ -142,11 +143,53 @@ object ProjectZipManager {
         }
 
         val appLabel = manifestLabel ?: effectiveName
-        val versionCode = extractVersionCode(manifestContent, textFiles)
-        val versionName = extractVersionName(manifestContent, textFiles)
-        val launcherActivity = extractLauncherActivity(manifestContent) ?: "MainActivity"
+        val versionCode = extractVersionCode(manifestContent, mutableTextFiles)
+        val versionName = extractVersionName(manifestContent, mutableTextFiles)
+        var launcherActivity = extractLauncherActivity(manifestContent)
+            ?: extractActivityFromSourceCode(mutableTextFiles)
+            ?: "MainActivity"
+
+        // If AndroidManifest.xml was completely missing, auto-synthesize a valid one
+        if (manifestContent.isBlank()) {
+            val syntheticManifest = buildString {
+                appendLine("""<?xml version="1.0" encoding="utf-8"?>""")
+                appendLine("""<manifest xmlns:android="http://schemas.android.com/apk/res/android"""")
+                appendLine("""    package="$packageName"""")
+                appendLine("""    android:versionCode="$versionCode"""")
+                appendLine("""    android:versionName="$versionName">""")
+                appendLine("""    <uses-permission android:name="android.permission.INTERNET" />""")
+                appendLine("""    <application""")
+                appendLine("""        android:allowBackup="true"""")
+                appendLine("""        android:label="$appLabel"""")
+                appendLine("""        android:theme="@android:style/Theme.DeviceDefault">""")
+                appendLine("""        <activity""")
+                appendLine("""            android:name=".$launcherActivity"""")
+                appendLine("""            android:exported="true">""")
+                appendLine("""            <intent-filter>""")
+                appendLine("""                <action android:name="android.intent.action.MAIN" />""")
+                appendLine("""                <category android:name="android.intent.category.LAUNCHER" />""")
+                appendLine("""            </intent-filter>""")
+                appendLine("""        </activity>""")
+                appendLine("""    </application>""")
+                appendLine("""</manifest>""")
+            }
+            manifestContent = syntheticManifest
+            mutableTextFiles["app/src/main/AndroidManifest.xml"] = syntheticManifest
+        }
+
+        // If strings.xml is missing, synthesize one with app_name
+        val hasStrings = mutableTextFiles.keys.any { it.lowercase().endsWith("strings.xml") }
+        if (!hasStrings) {
+            mutableTextFiles["app/src/main/res/values/strings.xml"] = """
+                <?xml version="1.0" encoding="utf-8"?>
+                <resources>
+                    <string name="app_name">$appLabel</string>
+                </resources>
+            """.trimIndent()
+        }
+
         val permissions = extractPermissions(manifestContent)
-        val dependencies = extractDependencies(textFiles)
+        val dependencies = extractDependencies(mutableTextFiles)
 
         return AndroidProject(
             name = effectiveName,
@@ -155,12 +198,34 @@ object ProjectZipManager {
             versionCode = versionCode,
             appLabel = appLabel,
             launcherActivity = launcherActivity,
-            files = textFiles,
+            files = mutableTextFiles,
             binaryFiles = binaryFiles,
             permissions = permissions,
             dependencies = dependencies,
             isTemplate = false
         )
+    }
+
+    private fun extractPackageFromSourceCode(textFiles: Map<String, String>): String? {
+        val regex = Regex("""package\s+([a-zA-Z0-9_.]+)""")
+        for ((path, content) in textFiles) {
+            if (path.endsWith(".kt") || path.endsWith(".java")) {
+                val match = regex.find(content)
+                if (match != null) return match.groupValues[1]
+            }
+        }
+        return null
+    }
+
+    private fun extractActivityFromSourceCode(textFiles: Map<String, String>): String? {
+        val classRegex = Regex("""class\s+([A-Za-z0-9_]+)\s*:\s*(?:ComponentActivity|Activity|AppCompatActivity)""")
+        for ((path, content) in textFiles) {
+            if (path.endsWith(".kt") || path.endsWith(".java")) {
+                val match = classRegex.find(content)
+                if (match != null) return match.groupValues[1]
+            }
+        }
+        return null
     }
 
     private fun extractRootProjectName(textFiles: Map<String, String>): String? {
