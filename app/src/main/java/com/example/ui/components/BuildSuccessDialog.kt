@@ -17,7 +17,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
@@ -50,7 +49,6 @@ fun BuildSuccessDialog(
     onInstall: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
-    onPublishGitHub: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val apkFile = buildResult.apkFile
@@ -83,7 +81,7 @@ fun BuildSuccessDialog(
                         color = CyberSecondary
                     )
                     Text(
-                        text = "Signed & Ready for Install / GitHub",
+                        text = "Signed & Ready to Install",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -171,14 +169,14 @@ fun BuildSuccessDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "v1 JAR (SHA256withRSA)",
+                            text = "v1 & v2 Android Signer",
                             fontSize = 12.sp,
                             color = CyberSecondary
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // Install Button
                 Button(
@@ -204,33 +202,7 @@ fun BuildSuccessDialog(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Upload to GitHub Button
-                Button(
-                    onClick = onPublishGitHub,
-                    colors = ButtonDefaults.buttonColors(containerColor = CyberPrimary),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(44.dp)
-                        .testTag("upload_github_dialog_btn")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CloudUpload,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = CyberSurface
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "PUBLISH TO GITHUB RELEASE",
-                        fontWeight = FontWeight.Bold,
-                        color = CyberSurface,
-                        fontSize = 12.sp
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

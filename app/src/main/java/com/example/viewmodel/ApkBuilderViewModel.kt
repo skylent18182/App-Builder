@@ -9,7 +9,6 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.engine.ApkBuilderEngine
-import com.example.engine.GitHubReleaseManager
 import com.example.engine.IntegrityReport
 import com.example.engine.PackageManagerEngine
 import com.example.engine.ProjectVerifier
@@ -17,8 +16,6 @@ import com.example.engine.ProjectZipManager
 import com.example.model.AndroidProject
 import com.example.model.BuildResult
 import com.example.model.BuildStep
-import com.example.model.GitHubConfig
-import com.example.model.GitHubReleaseResult
 import com.example.model.LogLevel
 import com.example.model.TerminalLog
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,12 +23,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
-import java.io.FileOutputStream
 
 class ApkBuilderViewModel(
     private val packageManagerEngine: PackageManagerEngine,
-    private val apkBuilderEngine: ApkBuilderEngine,
-    private val gitHubReleaseManager: GitHubReleaseManager
+    private val apkBuilderEngine: ApkBuilderEngine
 ) : ViewModel() {
 
     private val templatesList = ProjectZipManager.getBuiltInTemplates()
@@ -64,19 +59,9 @@ class ApkBuilderViewModel(
     private val _hasInstallPermission = MutableStateFlow(false)
     val hasInstallPermission: StateFlow<Boolean> = _hasInstallPermission.asStateFlow()
 
-    // GitHub Integration State
-    private val _gitHubConfig = MutableStateFlow<GitHubConfig>(gitHubReleaseManager.loadSavedConfig())
-    val gitHubConfig: StateFlow<GitHubConfig> = _gitHubConfig.asStateFlow()
-
-    private val _isUploadingToGitHub = MutableStateFlow(false)
-    val isUploadingToGitHub: StateFlow<Boolean> = _isUploadingToGitHub.asStateFlow()
-
-    private val _gitHubReleaseResult = MutableStateFlow<GitHubReleaseResult?>(null)
-    val gitHubReleaseResult: StateFlow<GitHubReleaseResult?> = _gitHubReleaseResult.asStateFlow()
-
     init {
         refreshCacheInfo()
-        addLog("APK Forge Engine v2.4 initialized with GitHub Release integration.", LogLevel.SYSTEM, "INIT")
+        addLog("APK Forge Engine v2.4 initialized.", LogLevel.SYSTEM, "INIT")
         addLog("Loaded default template: ${_currentProject.value.name}")
         addLog("Type 'help' in terminal or tap 'Build APK' to compile.")
         runIntegrityVerification()
@@ -250,72 +235,6 @@ class ApkBuilderViewModel(
         }
     }
 
-    // GitHub Integration Actions
-    fun updateGitHubConfig(config: GitHubConfig) {
-        _gitHubConfig.value = config
-        gitHubReleaseManager.saveConfig(config)
-    }
-
-    fun testGitHubConnection() {
-        viewModelScope.launch {
-            val config = _gitHubConfig.value
-            addLog("Testing GitHub connection to ${config.owner}/${config.repo}...", LogLevel.COMMAND, "GITHUB")
-            val res = gitHubReleaseManager.validateRepository(config)
-            if (res.isSuccess) {
-                addLog("✓ ${res.getOrNull()}", LogLevel.SUCCESS, "GITHUB")
-            } else {
-                addLog("✗ Connection failed: ${res.exceptionOrNull()?.message}", LogLevel.ERROR, "GITHUB")
-            }
-        }
-    }
-
-    fun publishApkToGitHub(apkFile: File) {
-        if (_isUploadingToGitHub.value) return
-        viewModelScope.launch {
-            _isUploadingToGitHub.value = true
-            _gitHubReleaseResult.value = null
-
-            val config = _gitHubConfig.value
-            addLog("Initiating GitHub Release upload for: ${apkFile.name} -> ${config.owner}/${config.repo}", LogLevel.COMMAND, "GITHUB")
-
-            val result = gitHubReleaseManager.uploadApkToRelease(config, apkFile) { prog, msg ->
-                addLog(msg, LogLevel.INFO, "GITHUB", prog)
-            }
-
-            if (result.isSuccess) {
-                val releaseRes = result.getOrNull()!!
-                _gitHubReleaseResult.value = releaseRes
-                addLog("🎉 Release published: ${releaseRes.htmlUrl}", LogLevel.SUCCESS, "GITHUB")
-                addLog("Direct APK Download: ${releaseRes.downloadUrl}", LogLevel.SUCCESS, "GITHUB")
-
-                // Update latest build result with GitHub link
-                _latestBuildResult.value = _latestBuildResult.value?.copy(
-                    githubReleaseUrl = releaseRes.htmlUrl
-                )
-            } else {
-                val err = result.exceptionOrNull()?.message ?: "Unknown upload failure"
-                _gitHubReleaseResult.value = GitHubReleaseResult(success = false, errorMessage = err)
-                addLog("✗ GitHub Release failed: $err", LogLevel.ERROR, "GITHUB")
-            }
-
-            _isUploadingToGitHub.value = false
-        }
-    }
-
-    fun exportGitHubWorkflowFile(context: Context, targetUri: Uri) {
-        viewModelScope.launch {
-            try {
-                val yaml = gitHubReleaseManager.generateGitHubWorkflowYaml(_currentProject.value)
-                context.contentResolver.openOutputStream(targetUri)?.use { out ->
-                    out.write(yaml.toByteArray(Charsets.UTF_8))
-                }
-                addLog("✓ Exported GitHub Actions workflow (.github/workflows/build-apk.yml)", LogLevel.SUCCESS, "GITHUB")
-            } catch (e: Exception) {
-                addLog("Failed to export workflow file: ${e.message}", LogLevel.ERROR, "GITHUB")
-            }
-        }
-    }
-
     fun executeTerminalCommand(cmd: String) {
         val trimmed = cmd.trim()
         if (trimmed.isEmpty()) return
@@ -328,8 +247,6 @@ class ApkBuilderViewModel(
             "help" -> {
                 addLog("Available commands:")
                 addLog("  build          - Full build pipeline (verify, resolve, compile, sign)")
-                addLog("  github         - Show GitHub release configuration & status")
-                addLog("  release        - Upload built APK to GitHub Release")
                 addLog("  verify / check - Run project integrity & missing packages check")
                 addLog("  download       - Fetch missing SDK packages and dependencies")
                 addLog("  info           - Show current project details and metadata")
@@ -339,22 +256,6 @@ class ApkBuilderViewModel(
                 addLog("  clear          - Clear terminal logs")
             }
             "build" -> startBuild()
-            "github" -> {
-                val conf = _gitHubConfig.value
-                addLog("GitHub Configuration:")
-                addLog("  Repo: ${conf.owner.ifEmpty { "[none]" }}/${conf.repo.ifEmpty { "[none]" }}")
-                addLog("  Release Tag: ${conf.tagName}")
-                addLog("  Token Configured: ${if (conf.token.isNotBlank()) "Yes (length: ${conf.token.length})" else "No (demo mode)"}")
-                addLog("  Release Title: ${conf.releaseTitle}")
-            }
-            "release", "publish" -> {
-                val file = _latestBuildResult.value?.apkFile
-                if (file != null && file.exists()) {
-                    publishApkToGitHub(file)
-                } else {
-                    addLog("No compiled APK found. Run 'build' first to produce an APK.", LogLevel.WARNING, "GITHUB")
-                }
-            }
             "verify", "check" -> runIntegrityVerification()
             "download" -> downloadMissingPackages()
             "info" -> {
